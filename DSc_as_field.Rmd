@@ -1,0 +1,230 @@
+---
+title: "Boulder DataScience as a field Final"
+author: "LHE74"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R library upload
+as a starting point to this analysis, let's upload the packages that will be needed
+
+```{r library, message=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(lubridate)
+library (ggplot2)
+library(curl)
+library(data.table)
+library(forcats)
+library (tinytex)
+```
+
+We will conduct an analysis of Covid data in the US based on the data from the CSSE at Johns Hopkins University.
+Data source is the CSSE github.
+We will consider the US confirmed and death cases only
+```{r read_data, message = FALSE}
+url_conf_us <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
+url_death_us <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
+data_conf_us <- read_csv(url_conf_us)
+data_death_us <- read_csv(url_death_us)
+```
+
+Let's give a quick look at the data sets with the first rows
+
+```{r Data_head}, message = FALSE}
+head(data_conf_us)
+head(data_death_us)
+```
+we can clearly see that the dates are not conveniently formatted for an analysis and that a pivot will be needed, we can also consider that some fields will be less relevant for us. like long/lat or UID.
+
+## Data pivoting
+We want to transform the date columns into a single column, using the pivot_longer function.
+the new field called "Date" will then contains the pivoted dates
+the new field called "Cases" will contain the occurrences
+
+```{r conf_us_pivot, message = FALSE}
+data_conf_us_pivot <- data_conf_us %>%
+  pivot_longer(cols = -c ("UID","iso2","iso3", "code3" ,"FIPS", "Admin2","Province_State","Country_Region","Lat","Long_", "Combined_Key"),
+               names_to = "Date",
+               values_to = "Cases" ) %>%
+  ## ensure date formatting
+      mutate (Conf_dt = mdy(Date))%>%
+        group_by (Province_State,Conf_dt)%>%
+          summarise (Conf_nb = sum (Cases))%>%
+  ## keep only relevant fields
+            select (c("Province_State","Conf_dt","Conf_nb"))
+  
+tail(data_conf_us_pivot)
+
+```
+We then now have the cumulative number of confirmed cases by state and date
+Let's do the same thing for the death cases
+```{r conf_us_pivot}, message = FALSE}
+data_death_us_pivot <- data_death_us %>%
+  
+  pivot_longer(cols = -c ("UID","iso2","iso3", "code3" ,"FIPS", "Admin2","Province_State","Country_Region","Lat","Long_", "Combined_Key","Population"),
+               names_to = "date",
+               values_to = "cases" ) %>%
+    mutate (cases = cases*1)%>%
+    mutate (Population = Population*1)%>%
+    mutate (Death_dt = mdy(date))%>%
+  
+    group_by(Province_State,Death_dt) %>%
+    summarise(Death_nb = sum (cases), Population_nb = sum (Population))%>%
+  
+  select (c("Province_State", "Population_nb", "Death_dt","Death_nb"))
+  
+tail(data_death_us_pivot)
+
+```
+We complement our data discovery with the basic statistics of the data sets
+```{r Data_summary}, message = FALSE}
+summary(data_conf_us_pivot)
+summary(data_death_us_pivot)
+```
+
+In order to conduct our analysis, we need to join both data sets based of the common fields.
+We use an inner join to ensure perfect matching based of dates and states.
+```{r joint}, message = FALSE}
+data_joint_us <- data_death_us_pivot %>%
+  ## inner join ensure having death and confirmed data for shared states & date
+  inner_join(data_conf_us_pivot, by = c("Province_State"="Province_State", "Death_dt" = "Conf_dt" )) %>%
+  ## just a renaming as this is a date and not death or confirmed date
+  rename (Date = "Death_dt")
+tail (data_joint_us)
+```  
+
+## Analysis
+We want to visualize the stats having the highest cumulated death numbers over the period as a first filter to our analysis
+
+```{r trend}, message = FALSE,fig.height = 4, fig.width = 10,warning = FALSE}
+## based on state we order the data
+trend <- setDT(data_joint_us)[, Province_State := fct_reorder(Province_State, -Death_nb, last)]
+
+## we individualize the top 5 and qualify them as Top_Province_State
+trend[, Top_Province_State := fct_other(Province_State, keep = head(levels(Province_State), 5))]
+
+## we trend the data, only coloring the top 5
+ggplot(trend, aes(Date, Death_nb, group = Province_State, colour = Top_Province_State)) + 
+  geom_point() + geom_line(size = 1) + theme_bw() + ylab("Cumulated deaths") +
+  scale_colour_manual(name = "top 5 States & others", values = c("green3", "orange", "blue", "red","yellow", "grey"))+
+  ggtitle("Cumulated Covid 19 deaths per state,\nfrom January 2020 to today")
+```  
+So we can clearly see which are the top 5 states in terms of absolute deaths and that despite a rapid start in New York this state is currently in 4th position when California has the opposite pattern, slow start then rapid growth to a sad pole position.
+
+This cumulated chart is interesting but let's see how each month behave for the top 4 states
+
+```{r incremental, fig.height = 3, fig.width = 10, message = FALSE}
+trend_data <- trend %>% filter (Province_State=="California"|Province_State=="Texas"| Province_State=="Florida"| 
+                                  Province_State=="New York"| Province_State=="Pennsylvania") %>%
+
+##  compute the incremental based on cumulated numbers
+      mutate_at(vars(Death_nb:Conf_nb),funs(.-c(0,lag(.)[-1]))) %>%
+  
+## simplify the date    
+       mutate (Incident_yr = year(Date),
+            Incident_mnth = month(Date),
+            ) %>% 
+      mutate(Date_short = make_date(Incident_yr, Incident_mnth, '01'))%>%
+  
+## summarize based on shorten date
+      group_by (Province_State,Population_nb,Date_short) %>%
+      summarise (Death_nb_mnth = round(sum (Death_nb),0), Conf_nb_mnth = round(sum (Conf_nb),0)) %>%
+  
+## reset first date to 0 death and 0 confirmed
+      mutate(Death_nb_mnth=replace(Death_nb_mnth, Date_short=="2020-01-01", 0))%>%
+      mutate(Conf_nb_mnth=replace(Conf_nb_mnth, Date_short=="2020-01-01", 0))
+
+## draw chart
+trend_data %>%
+   ggplot (aes(x = Date_short, y = Conf_nb_mnth))+
+   geom_line (aes(color = Province_State)) + labs(x = "Dates") + labs(y = "Confirmed number of cases")+ 
+   scale_colour_manual(name = "top 5 States", values = c("California" = "green3","Texas" = "orange",
+                                                         "Florida" = "blue", "New York" = "red", "Pennsylvania" = "yellow")) +
+  ggtitle("Incremental Covid 19 deaths for the top 5 states,\nfrom January 2020 to today")
+```
+California appears to really exceed all the other 4 states in November and December 2021 and 2022.
+But is this truly the case? Do people die more or how different is the mortality rate in California compared to the average rate the other top 4 states. 
+
+To visualize that, we will display the difference between the death to confirmed case for the top 4 states vs the same rate for California. 
+the top 3 state rate will be used as a 0 base and the deviation for California as a bar over or under this average.
+
+```{r death_rate_dev, fig.height = 3, fig.width = 10, message = FALSE,warning = FALSE}
+## lets compute the rate for the other 3 states 
+total_rate <- trend_data %>% filter (Province_State != "California")%>%group_by (Date_short) %>% summarise (Death_nb_tot = sum (Death_nb_mnth), Conf_nb_tot = sum (Conf_nb_mnth)) %>%
+  mutate (death_to_conf_rate_tot = Death_nb_tot/Conf_nb_tot)
+
+## lets compute the rate for the California
+total_calif <- trend_data %>% filter (Province_State == "California")%>%
+  mutate (death_to_conf_rate_calif = Death_nb_mnth/Conf_nb_mnth)
+
+## Joining the 2 data sets
+Total_join <- total_rate %>%
+  inner_join(total_calif, by = "Date_short") %>%
+  select (Date_short,death_to_conf_rate_tot,death_to_conf_rate_calif) %>%
+  mutate (Calif_dev = (death_to_conf_rate_calif- death_to_conf_rate_tot)*100)%>%
+  select (Date_short,Calif_dev)
+# tail (Total_join)
+
+## display the deviation
+Total_join %>%
+   ggplot (aes(x = Date_short, y = Calif_dev))+
+   geom_col() + labs(x = "Dates") + labs(y = "deviation")+
+   labs(y = "Deviation in pts of percent") +
+  ggtitle("Death to Confirmed cases for California compared to the other top 4 states,\n by month from January 2020 to today")
+
+```
+We visualize clearly that the death to confirm case rate for California, compared to the average rate of the the other top 4, is
+
+  - much lower before July 2020
+  
+  - much higher between February and June 2021
+  
+  - about at par for the rest of the period
+   
+November and December 2020 and 2021 are not especially higher than the other 4 states.
+
+```{r death_rate_to_pop, fig.height = 3, fig.width = 10, message = FALSE,warning = FALSE}
+## lets compute the rate for the other 3 states 
+total_death_rate <- trend_data %>% filter (Province_State != "California")%>%group_by (Date_short) %>% summarise (Death_nb_tot = sum (Death_nb_mnth), Population_tot = sum (Population_nb)) %>%
+  mutate (death_pop_rate_tot = Death_nb_tot/Population_tot)
+
+## lets compute the rate for the California
+total_death_calif <- trend_data %>% filter (Province_State== "California")%>%
+  mutate (death_pop_rate_calif = Death_nb_mnth/Population_nb)
+
+## Joining the 2 data sets
+Total_death_join <- total_death_rate %>%
+  inner_join(total_death_calif, by = "Date_short") %>%
+  select (Date_short,death_pop_rate_calif,death_pop_rate_tot) %>%
+  mutate (Calif_death = (death_pop_rate_calif- death_pop_rate_tot)*100)%>%
+  select (Date_short,Calif_death)
+# tail (Total_join)
+
+## display the deviation
+Total_death_join %>%
+   ggplot (aes(x = Date_short, y = Calif_death))+
+   geom_col() + labs(x = "Dates") + labs(y = "deviation")+
+  labs(y = "Deviation in pts of percent") +
+  ggtitle("Death to Population cases for California compared to the other top 4 states,\n by month from January 2020 to today")
+
+```
+
+## Conclusion:
+  The death rate to the population for California, is indeed higher in December 2021 but not the rest of the year.
+  Therefore we may conclude that despite being the state with the highest cumulative death, this result is proportionally lower than the other top 4 high states.
+  
+## Possible bias:
+We have only considered the top 5 states to compare with the highest one of them, ie, California, which may hide other interesting patterns.
+We have considered only at total state level when an investigation within California provinces may also revel interesting patterns.
+Altogether, this is a very rapid and high level approach that would deserve much deeper investigations.
+  
+  
