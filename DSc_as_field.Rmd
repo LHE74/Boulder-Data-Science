@@ -14,6 +14,11 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This analysis is conducted as the final exam of the "Data Science as a Field" course held by the University of Boulder Colorado within the Master for Data Science. Data are Covid 19 death and confirmed cases taken from Johns Hopkins University Github. 
 
+## Questions of interest
+ - which are the top 5 states
+ - has the top state a different death to confirmed and death to population rate
+ - can we forecast death numbers
+ -
 ## R library upload
 as a starting point to this analysis, let's upload the packages that will be needed
 
@@ -28,7 +33,9 @@ library(curl)
 library(data.table)
 library(forcats)
 library (tinytex)
-```
+library(tsibble)
+library(fable)
+library(feasts)
 
 We will conduct an analysis of Covid data in the US based on the data from the CSSE at Johns Hopkins University.
 Data source is the CSSE github.
@@ -221,9 +228,40 @@ Total_death_join %>%
 
 ```
 
+``` {r time_series, fig.height = 3, fig.width = 12, message = FALSE,warning = FALSE}
+trend_prep <- trend %>% filter (Province_State=="California") %>%
+
+##  compute the incremental based on cumulated numbers
+      mutate_at(vars(Death_nb, Conf_nb),funs(.-c(0,lag(.)[-1]))) %>%
+  
+## group date
+      group_by (Province_State,Date) %>%
+  
+## shorten data set
+      select (Province_State, Date, Death_nb)
+
+prep_data <- trend_prep%>% filter (Province_State== "California") %>% tsibble(., key = Province_State, index = Date)
+
+fit <- prep_data %>%
+  model(
+    ets = ETS(Death_nb),
+    arima = ARIMA(Death_nb)
+  )
+
+
+fc = fit %>%
+forecast(h = "1 years")
+
+fc %>% autoplot(prep_data) +
+ggtitle("California Death forecast")
+``` 
+
+
 ## Conclusion:
   The death rate to the population for California, is indeed higher in December 2021 but not the rest of the year.
   Therefore we may conclude that despite being the state with the highest cumulative death, this result is proportionally lower than the other top 4 high states.
+  
+  The forecast model was not so conclusive in the sense that the range of values is so wide that the arima and the ETS were not in a position to provide meaningful forecasts
   
 ## Possible bias:
 We have only considered the top 5 states to compare with the highest one of them, ie, California, which may hide other interesting patterns.
