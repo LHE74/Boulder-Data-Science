@@ -10,6 +10,9 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+## Introduction
+
+This analysis is conducted as the final exam of the "Data Science as a Field" course held by the University of Boulder Colorado within the Master for Data Science. Data are Covid 19 death and confirmed cases taken from Johns Hopkins University Github. 
 
 ## R library upload
 as a starting point to this analysis, let's upload the packages that will be needed
